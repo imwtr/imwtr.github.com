@@ -1,8 +1,13 @@
 // 模糊下拉搜索  select2插件的小封装
 //
 ;(function($) {
+
     $.fn.select2.amd.define('CustomResults', ['jquery', 'select2/utils', 'select2/results'], function ($, Utils, Results) {
         Results.prototype.option = function (data) {
+            if (data.hidden) {
+                return null;
+            }
+
             var option, append = false;
             if (data.children) {
                  option = $('.select2-results__option[aria-label="' + data.text + '"]')[0];
@@ -24,6 +29,10 @@
                  'role': 'treeitem',
                  'aria-selected': 'false'
              };
+
+             if (data.customClass) {
+                $(option).addClass('custom-class');
+             }
 
              if (data.disabled) {
                  delete attrs['aria-selected'];
@@ -139,6 +148,88 @@
             };
         })
 
+        $.fn.select2.amd.define('CustomSearch', ['jquery', 'select2/utils', 'select2/keys', 'select2/selection/search'], function ($, Utils, KEYS, Search) {
+            Search.prototype.searchRemoveChoice = function (decorated, item) {
+                this.trigger('unselect', {
+                    data: item
+                });
+
+                // this.$search.val(item.text);
+                // this.handleSearch();
+              };
+        });
+
+        $.fn.select2.amd.define('CustomSingleSelection', ['jquery', 'select2/selection/base', 'select2/utils', 'select2/keys', 'select2/selection/single'], function ($, BaseSelection, Utils, KEYS, SingleSelection) {
+            SingleSelection.prototype.update = function (data) {
+                if (data.length === 0) {
+                  this.clear();
+                  return;
+                }
+
+                var selection = data[0];
+
+                var $rendered = this.$selection.find('.select2-selection__rendered');
+                var formatted = this.display(selection, $rendered);
+
+                $rendered.empty().append(formatted);
+                $rendered.attr('title', formatted || selection.title || selection.text);
+              };
+        });
+
+        $.fn.select2.amd.define('CustomMultipleSelection', ['jquery', 'select2/selection/base', 'select2/utils', 'select2/selection/multiple'], function ($, BaseSelection, Utils, MultipleSelection) {
+            MultipleSelection.prototype.update = function (data) {
+                this.clear();
+
+                if (data.length === 0) {
+                  return;
+                }
+
+                var $selections = [];
+
+                for (var d = 0; d < data.length; d++) {
+                  var selection = data[d];
+
+                  var $selection = this.selectionContainer();
+                  var formatted = this.display(selection, $selection);
+
+                  $selection.append(formatted);
+                  $selection.attr('title', formatted || selection.title || selection.text);
+                  $selection.attr('data-id', selection.id || '');
+
+                  Utils.StoreData($selection[0], 'data', selection);
+
+                  $selections.push($selection);
+                }
+
+                var $rendered = this.$selection.find('.select2-selection__rendered');
+
+                Utils.appendMany($rendered, $selections);
+              };
+        });
+
+        function select2_renderSelections($select2){
+            var order = $select2.data('preserved-order') || [],
+                $container = $select2.next('.select2-container'),
+                $tags = $container.find('li.select2-selection__choice'),
+                $input = $tags.last().next();
+
+            if (typeof order !== 'object') {
+                order = [order];
+            }
+
+            order.forEach(function(val) {
+                var $el = $tags.filter(function(i, tag) {
+                    return $(tag).attr('data-id') === val;
+                });
+
+                $input.before($el);
+            });
+        }
+
+        function isArray(val) {
+            return val && Object.prototype.toString.call(val) === '[object Array]';
+        }
+
     var MAX_ITEM_SHOE = 100;
 
     $.fn.selectTwo = function(trigger, options) {
@@ -159,12 +250,14 @@
             id: 'id',
             // 设置需要匹配的区域（属性），默认为text
             matchField: ['text'],
-            // 搜索下拉列表的格式 % %里为项名，如 [%postNo%] %postName%，不设置则直接使用matchField的项
+            // 搜索下拉列表的格式 % %里为项名，如 [%staffNo] %staffName%，不设置则直接使用matchField的项
             resultFormat: '',
-            // 选中项的显示格式 % %里为项名，默认使用resultFormat的值  如 [%postNo%] %postName%，不设置则直接使用matchField的项
+            // 选中项的显示格式 % %里为项名，默认使用resultFormat的值  如 [%staffNo] %staffName%，不设置则直接使用matchField的项
             selectedFormat: '',
             // 设置为true可用于不精确匹配（也能搜索），输入数据时会临时加一项当前输入值到下拉列表中提供选择
             notMatched: false,
+            // 取消父<label>的点击效果，如果不取消，在单选点击元素展示下拉列表时 输入框会自动失焦
+            labelPreventDefault: true,
             // 最大展示的列表项目 默认100
             maxItemShow: MAX_ITEM_SHOE,
             // 多选的个数
@@ -181,6 +274,10 @@
             loadingMoreText: '加载中...',
             // 多选限制最大项的文本提示  需携带%max%占位符
             maxSelectedText: '只能选择%max%项',
+            // 是否在模态框中，如果为true，则将模糊搜索下拉列表的层级设为 zIndex的值
+            inModal: false,
+            // 默认模糊搜索下拉列表的层级，在inModal为true是生效
+            zIndex: 29891016,
 
             ajax: null,
 
@@ -259,15 +356,55 @@
 
             // 更新值
             updateValue: function($elem, value) {
-                $elem.val(value).trigger('change');
+                $elem.val(value);
+
+                if (!isArray(value)) {
+                    $elem.trigger('change');
+                    return;
+                }
+
+                $elem.data('preserved-order', value);
+
+                if (typeof value === 'object' && value.forEach) {
+                    value.forEach(function(item) {
+                        var $optgroup = $elem.find('optgroup');
+
+                        if ($optgroup.length) {
+                            var $option = $optgroup.children('[value=' + item + ']');
+                            $option.detach();
+
+                            $optgroup.append($option);
+                        } else {
+                            var $option = $elem.children('[value=' + item + ']');
+                            $option.detach();
+
+                            $elem.append($option);
+                        }
+                    });
+                }
+
+                $elem.trigger('change', true);
+
+                select2_renderSelections($elem);
             },
 
             // 销毁
             destroy: function($elem, empty) {
                 $elem.select2('destroy');
+                $elem.off('select2:close select2:open select2:select select2:unselect change');
 
                 empty && $elem.empty();
             },
+
+            // 隐藏下拉项
+            close: function($elem, value) {
+                $elem.select2('close');
+            },
+
+            // 显示下拉项
+            open: function($elem, value) {
+                $elem.select2('open');
+            }
         };
 
         if (typeof trigger === 'string') {
@@ -283,15 +420,17 @@
                 });
             }
 
-            return;
+            return this;
         } else {
             options = trigger;
         }
 
         if (options.useSelect2) {
             this.select2(options);
-            return;
+            return this;
         }
+
+        this.css('width', options.width || defaults.width);
 
         if (options.ajax) {
             var defaultsClone = $.extend(true, {}, defaults);
@@ -355,6 +494,8 @@
         this.each(function() {
             selectTwo($(this), opts);
         });
+
+        return this;
     };
 
     function createIDTextField(data, option) {
@@ -433,8 +574,11 @@
 
         // select2所调用的参数
         var options = $.extend(true, {
+            Search: $.fn.select2.amd.require('CustomSearch'),
             Results: $.fn.select2.amd.require('CustomResults'),
             SelectAdapter: $.fn.select2.amd.require('CustomSelectAdapter'),
+            SingleSelection: $.fn.select2.amd.require('CustomSingleSelection'),
+            MultipleSelection: $.fn.select2.amd.require('CustomMultipleSelection'),
             matcher: function(params, data, datas) {
                     if ($.trim(params.term) === '' && data.text) {
                         return {
@@ -504,7 +648,7 @@
                     if (options.group) {
                         var newData = $.extend(true, [], data);
                         // 没有限制最大展示的条目数的配置项，可以在sorter返回之前截取（返回之后才会进行渲染）
-                        // 当前选项值，如['p1','p2']
+                        // 当前选项值，如['S1','S2']
                         var selected = $('.my-select').val() || [];
                         selected = typeof selected === 'string' ? [selected] : selected;
 
@@ -540,7 +684,7 @@
 
                     // 在剩余项中有当前选项值，需要将其提取出来
                     var selectedInElse = false;
-                    // 当前选项值，如['p1','p2']
+                    // 当前选项值，如['S1','S2']
                     var selected = $elem.val() || [];
                     selected = typeof selected === 'string' ? [selected] : selected;
 
@@ -613,6 +757,10 @@
                 var select2 = $(this).data('select2');
                 select2.$selection.removeClass('no-top no-bottom');
 
+                if (options.inModal) {
+                    select2.$dropdown.css('z-index', 1);
+                }
+
                 // 防止下拉内容隐藏之后就失焦
                 setTimeout(function() {
                     select2.$selection.find('.select2-search__field').focus();
@@ -620,6 +768,10 @@
             })
             .on('select2:open', function(e) {
                 var select2 = $(this).data('select2');
+
+                if (options.inModal) {
+                    select2.$dropdown.css('z-index', options.zIndex);
+                }
 
                 if (select2.$dropdown.find('.select2-dropdown--above').length) {
                     select2.$dropdown.addClass('no-margin-top');
@@ -634,6 +786,13 @@
                     var $this = $(this);
 
                     options.change($this, e.params.data, $this.val());
+                } else if (isArray($(this).val())) {
+                    var id = e.params.data.id;
+
+                    var $option = $(e.target).children('[value=' + id + ']');
+
+                    $option.detach();
+                    $(e.target).append($option).trigger('change', true);
                 }
             })
             .on('select2:unselect', function(e) {
@@ -641,15 +800,19 @@
                     var $this = $(this);
 
                     options.change($this, e.params.data, $this.val());
+                } else if (isArray($(this).val())) {
+                    var id = e.params.data.id;
+
+                    var $option = $(e.target).children('[value=' + id + ']');
+
+                    $option.detach();
+                    $(e.target).append($option).trigger('change', true);
                 }
             })
-            .on('change', function() {
-                if (options.ajax) {
+            .on('change', function(e, triggerChange) {
+                if (options.ajax || (isArray($(this).val()) && !triggerChange)) {
                     return;
                 }
-
-                var select2 = $(this).data('select2');
-                select2.$container.find('.select2-selection__rendered, .select2-selection__choice').attr('title', '');
 
                 var $this = $(this),
                     data = [],
@@ -661,7 +824,8 @@
                         var temp = [];
                         cItem.data.forEach(function(item) {
                             if (ids.indexOf(item.id) !== -1) {
-                                temp.push(item);
+                                // temp.push(item);
+                                temp[ids.indexOf(item.id)] = item;
 
                                 if (!options.multiple) {
                                     return false;
@@ -683,7 +847,7 @@
 
                 options.data.forEach(function(item) {
                     if (ids.indexOf(item.id) !== -1) {
-                        data.push(item);
+                        data[ids.indexOf(item.id)] = item;
 
                         if (!options.multiple) {
                             return false;
@@ -698,9 +862,13 @@
                 }
             });
 
-        var select2 = $elem.data('select2');
+        if (options.labelPreventDefault) {
+            $elem.closest('label').on('click',  function(e) {
+                e.preventDefault();
+            });
+        }
 
-        select2.$container.find('.select2-selection__rendered, .select2-selection__choice').attr('title', '');
+        var select2 = $elem.data('select2');
 
         if (options.group && !options.groupTitleShow) {
             select2.$dropdown.addClass('select2-results__groupHide');
